@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>GP Objektanalys</title>
+<style>
+body{margin:0;background:#1B2A52;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
+#loading{min-height:100vh;display:grid;place-items:center;padding:24px;text-align:center}
+.card{max-width:520px;background:#22345f;border:1px solid #7b8bab;border-radius:14px;padding:22px}
+.card b{color:#d5b56f}.small{font-size:12px;color:#b8c2d8;margin-top:8px;line-height:1.5}
+</style>
+</head>
+<body>
+<div id="loading"><div class="card"><b>GP Objektanalys</b><div class="small">Laddar analysverktyget och eventuell data fran Deal Finder...</div></div></div>
+
+<script>
+(async function(){
+  try{
+    const res = await fetch("./Objektanalys?v=" + Date.now(), {cache:"no-store"});
+    if(!res.ok) throw new Error("Kunde inte ladda Objektanalys ("+res.status+")");
+    let src = await res.text();
+
+    /* Textjusteringar i originalverktyget */
+    src = src.replace('"Total invest. / m\u00b2","K\u00f6p + renov"', '"Total investering / m\u00b2","K\u00f6p + k\u00f6pkostnader + renovering"');
+    src = src.replace('"S\u00e4ljpris / m\u00b2","F\u00f6rv\u00e4ntat exit"', '"F\u00f6rv\u00e4ntat s\u00e4ljpris / m\u00b2","Ber\u00e4knad exit"');
+    src = src.replace(/Total invest\. per m\u00b2/g, "Total investering per m\u00b2");
+
+    const importer = String.raw`
+/* === GP DEAL FINDER IMPORT BRIDGE V2 === */
+function gpImportSelectedDeal(){
+  try{
+    const raw=localStorage.getItem("gpSelectedDeal");
+    if(!raw)return false;
+    const d=JSON.parse(raw);
+    if(!d||typeof d!=="object")return false;
+
+    const n=v=>{const x=Number(v);return Number.isFinite(x)?x:0;};
+    const txt=v=>v==null?"":String(v);
+
+    /* Grunddata */
+    state.obj.namn = txt(d.title || "Deal Finder-objekt");
+    state.obj.adress = txt(d.zone || "");
+    state.obj.omrade = txt(d.zone || "");
+    state.obj.stad = txt(d.area || "");
+    state.obj.boyta = n(d.sqm) || "";
+    state.obj.utgangspris = n(d.price) || "";
+    state.obj.malPris = n(d.price) || "";
+
+    /* K\u00f6p */
+    state.kop.kopeskilling = n(d.price) || "";
+
+    /* Deal Finder costPct representerar samlade k\u00f6pkostnader.
+       Vi placerar beloppet som en separat post s\u00e5 total investering blir korrekt. */
+    const purchaseCosts = n(d.price) * n(d.costPct) / 100;
+    state.kop.itp = "";
+    state.kop.jurist = "";
+    state.kop.notarie = "";
+    state.kop.lagfart = "";
+    state.kop["st\u00e4mpel"] = "";
+    state.kop.bank = "";
+    state.kop.maklararvode = "";
+    state.kop.valuta = "";
+    state.kop.ovrigtKop = purchaseCosts > 0 ? purchaseCosts : "";
+
+    /* Renoveringsbudgeten fr\u00e5n Deal Finder l\u00e4ggs in i kalkylen.
+       Buffert = 0 vid import eftersom d.renov redan \u00e4r den satta totalbudgeten.
+       Den kan sedan brytas ner manuellt i renoveringsfliken. */
+    state.buffertPct = "0";
+    ensureRenov();
+
+    Object.keys(state.renov).forEach(k=>{
+      if(Array.isArray(state.renov[k])){
+        state.renov[k].forEach(r=>{r.arb="";r.mat="";});
+      }
+    });
+
+    if(n(d.renov)>0 && state.renov.ovrigt && state.renov.ovrigt.length){
+      state.renov.ovrigt[0].arb = n(d.renov);
+      state.renov.ovrigt[0].komm = "Importerad total renoveringsbudget fr\u00e5n GP Deal Finder. Bryt ner per kategori vid detaljkalkyl.";
+    }
+
+    /* Community */
+    if(n(d.community)>0){
+      state.obj.community = Math.round(n(d.community)*12);
+      state.uth.community = Math.round(n(d.community)*12);
+    }
+
+    /* Exit */
+    if(n(d.exit)>0){
+      state.roi.marknadsvarde = n(d.exit);
+      state.roi.forsaljningspris = n(d.exit);
+    }
+
+    const lines=[];
+    if(d.score!=null) lines.push("GP Score: "+d.score+"/100");
+    if(d.source) lines.push("K\u00e4lla: "+d.source);
+    if(n(d.renov)>0) lines.push("Renoveringsbudget: "+Math.round(n(d.renov)).toLocaleString("sv-SE")+" EUR");
+    if(n(d.months)>0) lines.push("Bed\u00f6md s\u00e4ljtid: "+n(d.months)+" m\u00e5n");
+    if(n(d.liquidity)>0) lines.push("Likviditet: "+n(d.liquidity)+"/5");
+    if(n(d.location)>0) lines.push("Mikrol\u00e4ge: "+n(d.location)+"/5");
+    if(n(d.need)>0) lines.push("Renoveringsbehov: "+n(d.need)+"/5");
+    if(n(d.marketBefore)>0) lines.push("Lokal marknad, orenoverat: "+Math.round(n(d.marketBefore)).toLocaleString("sv-SE")+" EUR/m\u00b2");
+    if(n(d.marketAfter)>0) lines.push("Lokal marknad, renoverat: "+Math.round(n(d.marketAfter)).toLocaleString("sv-SE")+" EUR/m\u00b2");
+    if(n(d.comps)>0) lines.push("J\u00e4mf\u00f6relseobjekt: "+n(d.comps));
+    if(n(d.dom)>0) lines.push("Median liggtid: "+n(d.dom)+" dagar");
+    else lines.push("Median liggtid: data saknas");
+    if(d.trend!=null && n(d.trend)!==0) lines.push("Prisf\u00f6r\u00e4ndring 12 m\u00e5n: "+n(d.trend).toFixed(1)+" %");
+    if(d.discountPct!=null) lines.push("Pris mot lokal marknad: "+n(d.discountPct).toFixed(1)+" %");
+    if(d.roi!=null) lines.push("Projekt-ROI enligt Deal Finder: "+n(d.roi).toFixed(1)+" %");
+    if(d.gross!=null) lines.push("Bruttomarginal enligt Deal Finder: "+Math.round(n(d.gross)).toLocaleString("sv-SE")+" EUR");
+    if(n(d.sea)>0) lines.push("Avst\u00e5nd till hav: "+n(d.sea)+" km");
+    if(n(d.center)>0) lines.push("Avst\u00e5nd till centrum/service: "+n(d.center)+" km");
+    if(d.url) lines.push("Annons: "+txt(d.url));
+    if(d.notes) lines.push("Anteckning: "+txt(d.notes));
+
+    const summary=lines.join("\n");
+    state.obj.visning = summary;
+    state.roi.kommentarer = "Importerad fr\u00e5n GP Deal Finder.\n"+summary;
+
+    localStorage.setItem("gpLastImportedDeal", JSON.stringify(d));
+    localStorage.removeItem("gpSelectedDeal");
+    state.tab="objekt";
+    return true;
+  }catch(e){
+    console.error("GP import error",e);
+    return false;
+  }
+}
+gpImportSelectedDeal();
+/* === END GP DEAL FINDER IMPORT BRIDGE V2 === */
+`;
+
+    const pos = src.lastIndexOf("render();");
+    if(pos === -1) throw new Error("Kunde inte hitta Objektanalysens render-funktion.");
+    src = src.slice(0,pos) + importer + "\n" + src.slice(pos);
+
+    const backButton = `
+<a href="./deal-finder.html" class="no-print" style="position:fixed;right:12px;bottom:12px;z-index:99999;text-decoration:none;background:#1B2A52;color:#d5b56f;border:1px solid #b19255;border-radius:999px;padding:9px 13px;font:600 11px -apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;box-shadow:0 5px 18px rgba(0,0,0,.25)">&#8592; Deal Finder</a>`;
+    src = src.replace("</body>", backButton + "\n</body>");
+
+    document.open();
+    document.write(src);
+    document.close();
+  }catch(err){
+    document.getElementById("loading").innerHTML =
+      '<div class="card"><b>Kunde inte ladda Objektanalys</b><div class="small">'+
+      String(err.message).replace(/[&<>"']/g,function(c){return({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]})+
+      '<br><br><a href="./deal-finder.html" style="color:#d5b56f">Tillbaka till Deal Finder</a></div></div>';
+  }
+})();
+</script>
+</body>
+</html>
